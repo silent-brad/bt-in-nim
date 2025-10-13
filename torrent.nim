@@ -1,4 +1,4 @@
-import std/[strutils, tables, hashes, streams]
+import std/[strutils, tables, hashes, streams, sha1]
 import bencode
 
 type
@@ -18,7 +18,6 @@ type
   TorrentError* = object of CatchableError
 
 proc sha1_hash(data: string): string =
-  import std/sha1
   let hash = secureHash(data)
   result = $hash
 

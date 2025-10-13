@@ -1,15 +1,15 @@
 import std/[strutils, tables, streams]
 
 type
+  BencodeKind* = enum
+    bkInt, bkString, bkList, bkDict
+
   BencodeValue* = ref object
     case kind*: BencodeKind
     of bkInt: int_val*: int
     of bkString: str_val*: string
     of bkList: list_val*: seq[BencodeValue]
     of bkDict: dict_val*: OrderedTable[string, BencodeValue]
-
-  BencodeKind* = enum
-    bkInt, bkString, bkList, bkDict
 
   BencodeError* = object of CatchableError
 
@@ -24,6 +24,9 @@ proc new_list*(val: seq[BencodeValue] = @[]): BencodeValue =
 
 proc new_dict*(val: OrderedTable[string, BencodeValue] = initOrderedTable[string, BencodeValue]()): BencodeValue =
   BencodeValue(kind: bkDict, dict_val: val)
+
+# Forward declaration
+proc parse_bencode*(data: string, pos: var int): BencodeValue
 
 proc parse_int(data: string, pos: var int): BencodeValue =
   if data[pos] != 'i':
@@ -81,7 +84,7 @@ proc parse_list(data: string, pos: var int): BencodeValue =
   result = new_list()
   
   while pos < data.len and data[pos] != 'e':
-    result.list_val.add(parse_bencode(data, pos))
+    result.list_val.add(data.parse_bencode(pos))
   
   if pos >= data.len:
     raise newException(BencodeError, "Unterminated list")

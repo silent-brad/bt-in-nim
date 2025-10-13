@@ -1,4 +1,4 @@
-import std/[tables, sets, sha1, strutils]
+import std/[tables, sets, sha1, strutils, os, streams]
 import torrent, peer_wire
 
 type
@@ -80,12 +80,12 @@ proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
     let piece = pm.pieces[piece_idx]
     
     # Find an undownloaded block in this piece
-    for block in piece.blocks:
-      if not block.downloaded:
+    for blk in piece.blocks:
+      if not blk.downloaded:
         return BlockRequest(
           piece_index: piece_idx,
-          begin: block.begin,
-          length: block.length,
+          begin: blk.begin,
+          length: blk.length,
           peer: ""
         )
   
@@ -109,16 +109,16 @@ proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): b
       
       # Check if all blocks in this piece are downloaded
       var all_downloaded = true
-      for block in piece.blocks:
-        if not block.downloaded:
+      for blk in piece.blocks:
+        if not blk.downloaded:
           all_downloaded = false
           break
       
       if all_downloaded:
         # Verify the piece
         var piece_data = ""
-        for block in piece.blocks:
-          piece_data &= block.data
+        for blk in piece.blocks:
+          piece_data &= blk.data
         
         let expected_hash = pm.torrent.piece_hash(piece_index)
         let actual_hash = sha1_hash(piece_data)
@@ -178,8 +178,6 @@ proc has_piece*(pm: PieceManager, piece_index: int): bool =
   return piece_index in pm.completed_pieces
 
 proc write_files*(pm: PieceManager, output_dir: string = ".") =
-  import std/[os, streams]
-  
   if not pm.is_complete():
     echo "Download not complete, cannot write files"
     return
