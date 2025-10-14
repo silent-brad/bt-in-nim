@@ -2,15 +2,15 @@ import std/[os, asyncdispatch, asyncnet, net, strutils, times, random]
 import torrent, tracker, peer_wire, piece_manager
 
 type
-  TorrentClient* = ref object
-    torrent*: TorrentFile
+  Torrent_client* = ref object
+    torrent*: Torrent_file
     peer_id*: string
-    piece_manager*: PieceManager
-    peers*: seq[PeerConnection]
+    piece_manager*: Piece_manager
+    peers*: seq[Peer_connection]
     max_peers*: int
 
-proc new_torrent_client*(torrent_file: string, max_peers: int = 50): TorrentClient =
-  result = TorrentClient(
+proc new_torrent_client*(torrent_file: string, max_peers: int = 50): Torrent_client =
+  result = Torrent_client(
     torrent: parse_torrent(torrent_file),
     peer_id: generate_peer_id(),
     max_peers: max_peers,
@@ -23,7 +23,7 @@ proc new_torrent_client*(torrent_file: string, max_peers: int = 50): TorrentClie
   echo "Pieces: ", result.torrent.piece_count()
   echo "Total size: ", result.torrent.length, " bytes"
 
-proc connect_to_peers(client: TorrentClient, tracker_peers: seq[Peer]) =
+proc connect_to_peers(client: Torrent_client, tracker_peers: seq[Peer]) =
   var connected = 0
   
   for peer in tracker_peers:
@@ -37,20 +37,20 @@ proc connect_to_peers(client: TorrentClient, tracker_peers: seq[Peer]) =
       connected += 1
       
       # Send interested message
-      let interested_msg = PeerMessage(msg_type: mtInterested)
+      let interested_msg = Peer_message(msg_type: mt_interested)
       conn.send_message(interested_msg)
       conn.am_interested = true
       
       echo "Successfully connected to peer ", peer.ip, ":", peer.port
       
-    except PeerError as e:
+    except Peer_error as e:
       echo "Failed to connect to peer ", peer.ip, ":", peer.port, ": ", e.msg
     except OSError as e:
       echo "Network error connecting to peer ", peer.ip, ":", peer.port, ": ", e.msg
     
     sleep(100)  # Brief delay between connections
 
-proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
+proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
   try:
     # First, try to receive the bitfield
     var received_bitfield = false
@@ -63,15 +63,15 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
         let msg = conn.receive_message()
         
         case msg.msg_type
-        of mtBitfield:
+        of mt_bitfield:
           received_bitfield = true
           peer_bitfield = conn.bitfield
           echo "Received bitfield from peer ", conn.peer.ip, " with ", peer_bitfield.len, " pieces"
-        of mtUnchoke:
+        of mt_unchoke:
           echo "Peer ", conn.peer.ip, " unchoked us"
-        of mtChoke:
+        of mt_choke:
           echo "Peer ", conn.peer.ip, " choked us"
-        of mtHave:
+        of mt_have:
           echo "Peer ", conn.peer.ip, " has piece ", msg.piece_index
           if msg.piece_index < peer_bitfield.len:
             peer_bitfield[msg.piece_index] = true
@@ -79,7 +79,7 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
           echo "Received message type ", msg.msg_type, " from peer ", conn.peer.ip
         
         attempts += 1
-      except PeerError:
+      except Peer_error:
         attempts += 1
         sleep(500)
     
@@ -98,15 +98,15 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
           try:
             let msg = conn.receive_message()
             case msg.msg_type
-            of mtUnchoke:
+            of mt_unchoke:
               echo "Peer ", conn.peer.ip, " unchoked us"
-            of mtChoke:
+            of mt_choke:
               echo "Peer ", conn.peer.ip, " choked us"
               break
-            of mtHave:
+            of mt_have:
               if msg.piece_index < peer_bitfield.len:
                 peer_bitfield[msg.piece_index] = true
-            of mtPiece:
+            of mt_piece:
               # Unexpected piece data
               let success = client.piece_manager.add_block(msg.piece_idx, msg.piece_begin, msg.piece_data)
               if success:
@@ -114,7 +114,7 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
                 active_requests -= 1
             else:
               discard
-          except PeerError:
+          except Peer_error:
             break
           
           continue
@@ -124,8 +124,8 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
           let block_req = client.piece_manager.get_next_block(peer_bitfield)
           
           # Send request
-          let request_msg = PeerMessage(
-            msg_type: mtRequest,
+          let request_msg = Peer_message(
+            msg_type: mt_request,
             req_index: block_req.piece_index,
             req_begin: block_req.begin,
             req_length: block_req.length
@@ -136,7 +136,7 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
           
           echo "Requested piece ", block_req.piece_index, " block at ", block_req.begin, " from peer ", conn.peer.ip
           
-        except CatchableError:
+        except Catchable_error:
           # No more blocks available from this peer
           break
         
@@ -145,24 +145,24 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
           let msg = conn.receive_message()
           
           case msg.msg_type
-          of mtPiece:
+          of mt_piece:
             let success = client.piece_manager.add_block(msg.piece_idx, msg.piece_begin, msg.piece_data)
             if success:
               echo "Received block for piece ", msg.piece_idx, " from peer ", conn.peer.ip
             active_requests -= 1
           
-          of mtChoke:
+          of mt_choke:
             echo "Peer ", conn.peer.ip, " choked us"
             break
           
-          of mtHave:
+          of mt_have:
             if msg.piece_index < peer_bitfield.len:
               peer_bitfield[msg.piece_index] = true
           
           else:
             echo "Received message type ", msg.msg_type, " from peer ", conn.peer.ip
         
-        except PeerError:
+        except Peer_error:
           # Timeout or connection issue
           break
       
@@ -176,7 +176,7 @@ proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
   finally:
     conn.disconnect()
 
-proc download*(client: TorrentClient) =
+proc download*(client: Torrent_client) =
   echo "Starting download for torrent: ", client.torrent.name
   
   try:
@@ -223,7 +223,7 @@ proc download*(client: TorrentClient) =
         if current_progress > last_progress:
           made_progress = true
           last_progress = current_progress
-          echo "Progress: ", (current_progress * 100).formatFloat(ffDecimal, 1), "%"
+          echo "Progress: ", (current_progress * 100).format_float(ff_decimal, 1), "%"
       
       if not made_progress:
         stalled_count += 1
@@ -236,7 +236,7 @@ proc download*(client: TorrentClient) =
       echo "Download completed successfully!"
       client.piece_manager.write_files()
     else:
-      echo "Download incomplete. Progress: ", (client.piece_manager.progress() * 100).formatFloat(ffDecimal, 1), "%"
+      echo "Download incomplete. Progress: ", (client.piece_manager.progress() * 100).format_float(ff_decimal, 1), "%"
     
   except Exception as e:
     echo "Download failed: ", e.msg

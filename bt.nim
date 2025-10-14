@@ -6,15 +6,15 @@ proc print_usage() =
   echo "  torrent-file: Path to the .torrent file to download"
 
 proc main() =
-  let args = commandLineParams()
-  
+  let args = command_line_params()
+
   if args.len != 1:
     print_usage()
     quit(1)
   
   let torrent_file = args[0]
-  
-  if not fileExists(torrent_file):
+
+  if not file_exists(torrent_file):
     echo "Error: Torrent file not found: ", torrent_file
     quit(1)
   
@@ -30,5 +30,5 @@ proc main() =
     echo "Fatal error: ", e.msg
     quit(1)
 
-when isMainModule:
+when is_main_module:
   main()

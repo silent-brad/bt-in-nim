@@ -2,26 +2,26 @@ import std/[tables, sets, sha1, strutils, os, streams]
 import torrent, peer_wire
 
 type
-  PieceManager* = ref object
-    torrent*: TorrentFile
-    pieces*: seq[PieceState]
-    completed_pieces*: HashSet[int]
-    pending_blocks*: Table[int, seq[BlockRequest]]
+  Piece_manager* = ref object
+    torrent*: Torrent_file
+    pieces*: seq[Piece_state]
+    completed_pieces*: Hash_set[int]
+    pending_blocks*: Table[int, seq[Block_request]]
     downloaded_data*: Table[int, string]
   
-  PieceState* = object
+  Piece_state* = object
     index*: int
     downloaded*: bool
     verified*: bool
-    blocks*: seq[BlockState]
+    blocks*: seq[Block_state]
   
-  BlockState* = object
+  Block_state* = object
     begin*: int
     length*: int
     downloaded*: bool
     data*: string
   
-  BlockRequest* = object
+  Block_request* = object
     piece_index*: int
     begin*: int
     length*: int
@@ -29,19 +29,19 @@ type
 
 const BLOCK_SIZE = 16384  # 16KB
 
-proc new_piece_manager*(torrent: TorrentFile): PieceManager =
-  result = PieceManager(
+proc new_piece_manager*(torrent: Torrent_file): Piece_manager =
+  result = Piece_manager(
     torrent: torrent,
     pieces: @[],
-    completed_pieces: initHashSet[int](),
-    pending_blocks: initTable[int, seq[BlockRequest]](),
-    downloaded_data: initTable[int, string]()
+    completed_pieces: init_hash_set[int](),
+    pending_blocks: init_table[int, seq[Block_request]](),
+    downloaded_data: init_table[int, string]()
   )
   
   # Initialize pieces
   let piece_count = torrent.piece_count()
   for i in 0..<piece_count:
-    var piece = PieceState(
+    var piece = Piece_state(
       index: i,
       downloaded: false,
       verified: false,
@@ -54,7 +54,7 @@ proc new_piece_manager*(torrent: TorrentFile): PieceManager =
     # Split piece into blocks
     while offset < piece_size:
       let block_size = min(BLOCK_SIZE, piece_size - offset)
-      piece.blocks.add(BlockState(
+      piece.blocks.add(Block_state(
         begin: offset,
         length: block_size,
         downloaded: false,
@@ -65,10 +65,10 @@ proc new_piece_manager*(torrent: TorrentFile): PieceManager =
     result.pieces.add(piece)
 
 proc sha1_hash(data: string): string =
-  let hash = secureHash(data)
+  let hash = secure_hash(data)
   result = $hash
 
-proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
+proc get_next_block*(pm: Piece_manager, peer_pieces: seq[bool]): Block_request =
   # Find a piece that the peer has and we need
   for piece_idx in 0..<pm.pieces.len:
     if piece_idx >= peer_pieces.len or not peer_pieces[piece_idx]:
@@ -82,7 +82,7 @@ proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
     # Find an undownloaded block in this piece
     for blk in piece.blocks:
       if not blk.downloaded:
-        return BlockRequest(
+        return Block_request(
           piece_index: piece_idx,
           begin: blk.begin,
           length: blk.length,
@@ -90,9 +90,9 @@ proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
         )
   
   # No blocks found
-  raise newException(CatchableError, "No blocks available")
+  raise new_exception(Catchable_error, "No blocks available")
 
-proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): bool =
+proc add_block*(pm: Piece_manager, piece_index: int, begin: int, data: string): bool =
   if piece_index < 0 or piece_index >= pm.pieces.len:
     return false
   
@@ -143,49 +143,49 @@ proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): b
   
   return false
 
-proc is_piece_complete*(pm: PieceManager, piece_index: int): bool =
+proc is_piece_complete*(pm: Piece_manager, piece_index: int): bool =
   if piece_index < 0 or piece_index >= pm.pieces.len:
     return false
   
   return piece_index in pm.completed_pieces
 
-proc progress*(pm: PieceManager): float =
+proc progress*(pm: Piece_manager): float =
   if pm.pieces.len == 0:
     return 0.0
   
   return pm.completed_pieces.len.float / pm.pieces.len.float
 
-proc bytes_downloaded*(pm: PieceManager): int =
+proc bytes_downloaded*(pm: Piece_manager): int =
   result = 0
   for piece_index in pm.completed_pieces:
     result += pm.torrent.piece_size(piece_index)
 
-proc is_complete*(pm: PieceManager): bool =
+proc is_complete*(pm: Piece_manager): bool =
   return pm.completed_pieces.len == pm.pieces.len
 
-proc get_piece_data*(pm: PieceManager, piece_index: int): string =
+proc get_piece_data*(pm: Piece_manager, piece_index: int): string =
   if piece_index in pm.downloaded_data:
     return pm.downloaded_data[piece_index]
   return ""
 
-proc needed_pieces*(pm: PieceManager): seq[int] =
+proc needed_pieces*(pm: Piece_manager): seq[int] =
   result = @[]
   for i in 0..<pm.pieces.len:
     if i notin pm.completed_pieces:
       result.add(i)
 
-proc has_piece*(pm: PieceManager, piece_index: int): bool =
+proc has_piece*(pm: Piece_manager, piece_index: int): bool =
   return piece_index in pm.completed_pieces
 
-proc write_files*(pm: PieceManager, output_dir: string = ".") =
+proc write_files*(pm: Piece_manager, output_dir: string = ".") =
   if not pm.is_complete():
     echo "Download not complete, cannot write files"
     return
   
   if pm.torrent.files.len == 0:
     # Single file torrent
-    let filename = joinPath(output_dir, pm.torrent.name)
-    let file_stream = newFileStream(filename, fmWrite)
+    let filename = join_path(output_dir, pm.torrent.name)
+    let file_stream = new_file_stream(filename, fm_write)
     defer: file_stream.close()
     
     for i in 0..<pm.pieces.len:
@@ -195,19 +195,19 @@ proc write_files*(pm: PieceManager, output_dir: string = ".") =
     echo "Wrote single file: ", filename
   else:
     # Multi-file torrent
-    let base_dir = joinPath(output_dir, pm.torrent.name)
-    createDir(base_dir)
+    let base_dir = join_path(output_dir, pm.torrent.name)
+    create_dir(base_dir)
     
     var data_offset = 0
     
     for file_info in pm.torrent.files:
-      let file_path = joinPath(base_dir, joinPath(file_info.path))
-      let file_dir = parentDir(file_path)
+      let file_path = join_path(base_dir, join_path(file_info.path))
+      let file_dir = parent_dir(file_path)
       
-      if not dirExists(file_dir):
-        createDir(file_dir)
+      if not dir_exists(file_dir):
+        create_dir(file_dir)
       
-      let file_stream = newFileStream(file_path, fmWrite)
+      let file_stream = new_file_stream(file_path, fm_write)
       defer: file_stream.close()
       
       var remaining = file_info.length

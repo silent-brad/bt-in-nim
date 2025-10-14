@@ -2,7 +2,7 @@ import std/[httpclient, strutils, uri, random, tables]
 import bencode, torrent
 
 type
-  TrackerResponse* = object
+  Tracker_response* = object
     interval*: int
     peers*: seq[Peer]
     complete*: int
@@ -13,7 +13,7 @@ type
     port*: int
     id*: string
   
-  TrackerError* = object of CatchableError
+  Tracker_error* = object of Catchable_error
 
 proc generate_peer_id*(): string =
   randomize()
@@ -24,14 +24,14 @@ proc generate_peer_id*(): string =
 proc url_encode(s: string): string =
   result = ""
   for c in s:
-    if c.isAlphaNumeric() or c in ['-', '_', '.', '~']:
+    if c.is_alpha_numeric() or c in ['-', '_', '.', '~']:
       result &= c
     else:
-      result &= "%" & toHex(ord(c), 2)
+      result &= "%" & to_hex(ord(c), 2)
 
-proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 6881, 
-                         uploaded: int = 0, downloaded: int = 0, left: int = 0): TrackerResponse =
-  let client = newHttpClient()
+proc announce_to_tracker*(torrent: Torrent_file, peer_id: string, port: int = 6881, 
+                         uploaded: int = 0, downloaded: int = 0, left: int = 0): Tracker_response =
+  let client = new_http_client()
   defer: client.close()
   
   var params = @[
@@ -52,44 +52,44 @@ proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 688
   
   echo "Announcing to tracker: ", announce_url
   
-  let response = client.getContent(announce_url)
+  let response = client.get_content(announce_url)
   let decoded = parse_bencode(response)
   
-  if decoded.kind != bkDict:
-    raise newException(TrackerError, "Invalid tracker response")
+  if decoded.kind != bk_dict:
+    raise new_exception(Tracker_error, "Invalid tracker response")
   
   let tracker_dict = decoded.dict_val
   
   # Check for failure reason
   if "failure reason" in tracker_dict:
-    if tracker_dict["failure reason"].kind == bkString:
-      raise newException(TrackerError, "Tracker error: " & tracker_dict["failure reason"].str_val)
+    if tracker_dict["failure reason"].kind == bk_string:
+      raise new_exception(Tracker_error, "Tracker error: " & tracker_dict["failure reason"].str_val)
   
   # Parse interval
-  if "interval" in tracker_dict and tracker_dict["interval"].kind == bkInt:
+  if "interval" in tracker_dict and tracker_dict["interval"].kind == bk_int:
     result.interval = tracker_dict["interval"].int_val
   else:
     result.interval = 1800  # Default 30 minutes
   
   # Parse complete/incomplete
-  if "complete" in tracker_dict and tracker_dict["complete"].kind == bkInt:
+  if "complete" in tracker_dict and tracker_dict["complete"].kind == bk_int:
     result.complete = tracker_dict["complete"].int_val
   
-  if "incomplete" in tracker_dict and tracker_dict["incomplete"].kind == bkInt:
+  if "incomplete" in tracker_dict and tracker_dict["incomplete"].kind == bk_int:
     result.incomplete = tracker_dict["incomplete"].int_val
   
   # Parse peers (compact format)
   if "peers" notin tracker_dict:
-    raise newException(TrackerError, "No peers in tracker response")
+    raise new_exception(Tracker_error, "No peers in tracker response")
   
   result.peers = @[]
   
-  if tracker_dict["peers"].kind == bkString:
+  if tracker_dict["peers"].kind == bk_string:
     # Compact format: 6 bytes per peer (4 for IP, 2 for port)
     let peers_data = tracker_dict["peers"].str_val
     
     if peers_data.len mod 6 != 0:
-      raise newException(TrackerError, "Invalid peers data length")
+      raise new_exception(Tracker_error, "Invalid peers data length")
     
     var i = 0
     while i < peers_data.len:
@@ -112,28 +112,28 @@ proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 688
       result.peers.add(peer)
       i += 6
   
-  elif tracker_dict["peers"].kind == bkList:
+  elif tracker_dict["peers"].kind == bk_list:
     # Dictionary format (less common)
     for peer_item in tracker_dict["peers"].list_val:
-      if peer_item.kind != bkDict:
+      if peer_item.kind != bk_dict:
         continue
       
       let peer_dict = peer_item.dict_val
       var peer = Peer()
       
-      if "ip" in peer_dict and peer_dict["ip"].kind == bkString:
+      if "ip" in peer_dict and peer_dict["ip"].kind == bk_string:
         peer.ip = peer_dict["ip"].str_val
       
-      if "port" in peer_dict and peer_dict["port"].kind == bkInt:
+      if "port" in peer_dict and peer_dict["port"].kind == bk_int:
         peer.port = peer_dict["port"].int_val
       
-      if "peer id" in peer_dict and peer_dict["peer id"].kind == bkString:
+      if "peer id" in peer_dict and peer_dict["peer id"].kind == bk_string:
         peer.id = peer_dict["peer id"].str_val
       
       if peer.ip != "" and peer.port != 0:
         result.peers.add(peer)
   
   else:
-    raise newException(TrackerError, "Invalid peers format in tracker response")
+    raise new_exception(Tracker_error, "Invalid peers format in tracker response")
   
   echo "Found ", result.peers.len, " peers"
