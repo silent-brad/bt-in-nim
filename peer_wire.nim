@@ -1,5 +1,5 @@
-import std/[net, streams, strutils, endians]
-import tracker, torrent
+import std/[net, nativesockets, posix]
+import tracker
 
 type
   PeerConnection* = ref object
@@ -41,8 +41,17 @@ type
   
   PeerError* = object of CatchableError
 
-const HANDSHAKE_PSTR = "Bit_torrent protocol"
-const BLOCK_SIZE = 16384  # 16KB blocks
+proc recv_exact(socket: Socket, size: int): string =
+  result = new_string_of_cap(size)
+  var remaining = size
+  while remaining > 0:
+    let chunk = socket.recv(remaining)
+    if chunk.len == 0:
+      raise new_exception(PeerError, "Connection closed")
+    result.add(chunk)
+    remaining -= chunk.len
+
+const HANDSHAKE_PSTR = "BitTorrent protocol"
 
 proc new_peer_connection*(peer: Peer): PeerConnection =
   result = PeerConnection(
@@ -76,35 +85,17 @@ proc send_handshake*(conn: PeerConnection, info_hash: string, peer_id: string) =
   conn.socket.send(handshake)
 
 proc receive_handshake*(conn: PeerConnection): (string, string) =
-  # Read protocol string length
-  let pstr_len_data = conn.socket.recv(1)
-  if pstr_len_data.len != 1:
-    raise new_exception(PeerError, "Failed to read protocol string length")
-  
+  let pstr_len_data = conn.socket.recv_exact(1)
   let pstr_len = ord(pstr_len_data[0])
   
-  # Read protocol string
-  let protocol = conn.socket.recv(pstr_len)
-  if protocol.len != pstr_len:
-    raise new_exception(PeerError, "Failed to read protocol string")
-  
+  let protocol = conn.socket.recv_exact(pstr_len)
   if protocol != HANDSHAKE_PSTR:
     raise new_exception(PeerError, "Invalid protocol: " & protocol)
   
-  # Read reserved bytes (8 bytes)
-  let reserved = conn.socket.recv(8)
-  if reserved.len != 8:
-    raise new_exception(PeerError, "Failed to read reserved bytes")
+  discard conn.socket.recv_exact(8)
   
-  # Read info hash (20 bytes)
-  let info_hash = conn.socket.recv(20)
-  if info_hash.len != 20:
-    raise new_exception(PeerError, "Failed to read info hash")
-  
-  # Read peer ID (20 bytes)
-  let peer_id = conn.socket.recv(20)
-  if peer_id.len != 20:
-    raise new_exception(PeerError, "Failed to read peer ID")
+  let info_hash = conn.socket.recv_exact(20)
+  let peer_id = conn.socket.recv_exact(20)
   
   result = (info_hash, peer_id)
 
@@ -157,31 +148,22 @@ proc send_message*(conn: PeerConnection, msg: PeerMessage) =
   conn.socket.send(message)
 
 proc receive_message*(conn: PeerConnection): PeerMessage =
-  # Read message length (4 bytes)
-  let length_data = conn.socket.recv(4)
-  if length_data.len != 4:
-    raise new_exception(PeerError, "Failed to read message length")
-  
+  let length_data = conn.socket.recv_exact(4)
   let length = bytes_to_int(length_data)
   
   if length == 0:
-    # Keep-alive message
-    raise new_exception(PeerError, "Keep-alive message")
+    return conn.receive_message()
   
-  # Read message type (1 byte)
-  let msg_type_data = conn.socket.recv(1)
-  if msg_type_data.len != 1:
-    raise new_exception(PeerError, "Failed to read message type")
-  
+  let msg_type_data = conn.socket.recv_exact(1)
   let msg_type_int = ord(msg_type_data[0])
-  let msg_type = Message_type(msg_type_int)
   
-  # Read payload
   let payload_len = length - 1
-  let payload = if payload_len > 0: conn.socket.recv(payload_len) else: ""
+  let payload = if payload_len > 0: conn.socket.recv_exact(payload_len) else: ""
   
-  if payload.len != payload_len:
-    raise new_exception(PeerError, "Failed to read message payload")
+  if msg_type_int < ord(low(MessageType)) or msg_type_int > ord(high(MessageType)):
+    raise new_exception(PeerError, "Unknown message type: " & $msg_type_int)
+  
+  let msg_type = MessageType(msg_type_int)
   
   case msg_type
   of mt_choke:
@@ -203,7 +185,6 @@ proc receive_message*(conn: PeerConnection): PeerMessage =
     result = PeerMessage(msg_type: mt_have, piece_index: piece_index)
   of mt_bitfield:
     result = PeerMessage(msg_type: mt_bitfield, bitfield: payload)
-    # Parse bitfield
     conn.bitfield = @[]
     for byte_val in payload:
       for bit in 0..7:
@@ -231,22 +212,46 @@ proc receive_message*(conn: PeerConnection): PeerMessage =
     let req_length = bytes_to_int(payload[8..11])
     result = PeerMessage(msg_type: mt_cancel, req_index: index, req_begin: begin, req_length: req_length)
 
+proc connect_with_timeout(socket: Socket, address: string, port: Port, timeout_ms: int) =
+  let fd = socket.get_fd()
+  fd.set_blocking(false)
+  
+  try:
+    socket.connect(address, port)
+  except OSError:
+    var wfds: TFdSet
+    FD_ZERO(wfds)
+    FD_SET(fd, wfds)
+    var tv = Timeval(tv_sec: posix.Time(timeout_ms div 1000), 
+                     tv_usec: Suseconds((timeout_ms mod 1000) * 1000))
+    let ret = select(fd.cint + 1, nil, addr wfds, nil, addr tv)
+    if ret <= 0:
+      raise new_exception(PeerError, "Connection timed out")
+    
+    var err: cint
+    var err_len = SockLen(sizeof(err))
+    discard posix.getsockopt(fd, SOL_SOCKET, SO_ERROR, addr err, addr err_len)
+    if err != 0:
+      raise new_exception(PeerError, "Connection failed")
+  
+  fd.set_blocking(true)
+
 proc connect_to_peer*(peer: Peer, info_hash: string, peer_id: string): PeerConnection =
   result = new_peer_connection(peer)
   
   result.socket = new_socket()
-  result.socket.connect(peer.ip, Port(peer.port))
+  var tv = Timeval(tv_sec: posix.Time(5), tv_usec: Suseconds(0))
+  discard posix.setsockopt(result.socket.get_fd(), SOL_SOCKET, SO_RCVTIMEO, addr tv, SockLen(sizeof(tv)))
+  discard posix.setsockopt(result.socket.get_fd(), SOL_SOCKET, SO_SNDTIMEO, addr tv, SockLen(sizeof(tv)))
   
-  # Send handshake
+  connect_with_timeout(result.socket, peer.ip, Port(peer.port), 5000)
+  
   result.send_handshake(info_hash, peer_id)
   
-  # Receive handshake
-  let (received_hash, received_id) = result.receive_handshake()
+  let (received_hash, _) = result.receive_handshake()
   
   if received_hash != info_hash:
     raise new_exception(PeerError, "Info hash mismatch")
-  
-  echo "Connected to peer: ", peer.ip, ":", peer.port
 
 proc disconnect*(conn: PeerConnection) =
   if conn.socket != nil:

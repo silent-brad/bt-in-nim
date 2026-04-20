@@ -1,4 +1,4 @@
-import std/[strutils, tables, streams]
+import std/[strutils, tables]
 
 type
   BencodeKind* = enum
@@ -126,8 +126,6 @@ proc parse_bencode*(data: string, pos: var int): BencodeValue =
 proc parse_bencode*(data: string): BencodeValue =
   var pos = 0
   result = parse_bencode(data, pos)
-  if pos < data.len:
-    raise new_exception(BencodeError, "Extra data after bencode")
 
 proc encode_bencode*(value: BencodeValue): string =
   case value.kind

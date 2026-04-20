@@ -1,12 +1,12 @@
-import std/[tables, sets, sha1, strutils, os, streams]
-import torrent, peer_wire
+import std/[tables, sets, sha1, os, strutils]
+import torrent
 
 type
   PieceManager* = ref object
     torrent*: Torrent_file
     pieces*: seq[PieceState]
     completed_pieces*: Hash_set[int]
-    pending_blocks*: Table[int, seq[BlockRequest]]
+    in_flight*: Hash_set[int64]
     downloaded_data*: Table[int, string]
   
   PieceState* = object
@@ -34,7 +34,7 @@ proc new_piece_manager*(torrent: Torrent_file): PieceManager =
     torrent: torrent,
     pieces: @[],
     completed_pieces: init_hash_set[int](),
-    pending_blocks: init_table[int, seq[BlockRequest]](),
+    in_flight: init_hash_set[int64](),
     downloaded_data: init_table[int, string]()
   )
   
@@ -64,12 +64,16 @@ proc new_piece_manager*(torrent: Torrent_file): PieceManager =
     
     result.pieces.add(piece)
 
-proc sha1_hash(data: string): string =
-  let hash = secure_hash(data)
-  result = $hash
+proc sha1_raw(data: string): string =
+  let digest = Sha1Digest(secure_hash(data))
+  result = new_string(20)
+  for i in 0..<20:
+    result[i] = char(digest[i])
+
+proc block_key(piece_index: int, begin: int): int64 =
+  (piece_index.int64 shl 32) or begin.int64
 
 proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
-  # Find a piece that the peer has and we need
   for piece_idx in 0..<pm.pieces.len:
     if piece_idx >= peer_pieces.len or not peer_pieces[piece_idx]:
       continue
@@ -79,9 +83,9 @@ proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
     
     let piece = pm.pieces[piece_idx]
     
-    # Find an undownloaded block in this piece
     for blk in piece.blocks:
-      if not blk.downloaded:
+      if not blk.downloaded and block_key(piece_idx, blk.begin) notin pm.in_flight:
+        pm.in_flight.incl(block_key(piece_idx, blk.begin))
         return BlockRequest(
           piece_index: piece_idx,
           begin: blk.begin,
@@ -89,7 +93,6 @@ proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
           peer: ""
         )
   
-  # No blocks found
   raise new_exception(Catchable_error, "No blocks available")
 
 proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): bool =
@@ -98,11 +101,12 @@ proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): b
   
   var piece = addr pm.pieces[piece_index]
   
-  # Find the corresponding block
+  pm.in_flight.excl(block_key(piece_index, begin))
+  
   for i in 0..<piece.blocks.len:
     if piece.blocks[i].begin == begin:
       if piece.blocks[i].downloaded:
-        return false  # Already have this block
+        return false
       
       piece.blocks[i].data = data
       piece.blocks[i].downloaded = true
@@ -121,7 +125,7 @@ proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): b
           piece_data &= blk.data
         
         let expected_hash = pm.torrent.piece_hash(piece_index)
-        let actual_hash = sha1_hash(piece_data)
+        let actual_hash = sha1_raw(piece_data)
         
         if actual_hash == expected_hash:
           piece.verified = true
@@ -129,14 +133,15 @@ proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): b
           pm.completed_pieces.incl(piece_index)
           pm.downloaded_data[piece_index] = piece_data
           
-          echo "Piece ", piece_index, " completed and verified"
+          let pct = (pm.completed_pieces.len.float / pm.pieces.len.float * 100.0)
+          echo "Piece ", piece_index, " verified (", pm.completed_pieces.len, "/", pm.pieces.len, " - ", pct.format_float(ff_decimal, 1), "%)"
           return true
         else:
           echo "Piece ", piece_index, " failed verification"
-          # Reset all blocks in this piece
           for j in 0..<piece.blocks.len:
             piece.blocks[j].downloaded = false
             piece.blocks[j].data = ""
+            pm.in_flight.excl(block_key(piece_index, piece.blocks[j].begin))
           return false
       
       return true
@@ -182,19 +187,15 @@ proc write_files*(pm: PieceManager, output_dir: string = ".") =
     echo "Download not complete, cannot write files"
     return
   
+  var all_data = ""
+  for i in 0..<pm.pieces.len:
+    all_data &= pm.get_piece_data(i)
+  
   if pm.torrent.files.len == 0:
-    # Single file torrent
     let filename = join_path(output_dir, pm.torrent.name)
-    let file_stream = new_file_stream(filename, fm_write)
-    defer: file_stream.close()
-    
-    for i in 0..<pm.pieces.len:
-      let piece_data = pm.get_piece_data(i)
-      file_stream.write(piece_data)
-    
-    echo "Wrote single file: ", filename
+    write_file(filename, all_data[0..<pm.torrent.length])
+    echo "Wrote file: ", filename
   else:
-    # Multi-file torrent
     let base_dir = join_path(output_dir, pm.torrent.name)
     create_dir(base_dir)
     
@@ -207,21 +208,7 @@ proc write_files*(pm: PieceManager, output_dir: string = ".") =
       if not dir_exists(file_dir):
         create_dir(file_dir)
       
-      let file_stream = new_file_stream(file_path, fm_write)
-      defer: file_stream.close()
-      
-      var remaining = file_info.length
-      
-      while remaining > 0:
-        let piece_index = data_offset div pm.torrent.piece_length
-        let piece_offset = data_offset mod pm.torrent.piece_length
-        let piece_data = pm.get_piece_data(piece_index)
-        
-        let to_read = min(remaining, piece_data.len - piece_offset)
-        let chunk = piece_data[piece_offset..<piece_offset + to_read]
-        
-        file_stream.write(chunk)
-        data_offset += to_read
-        remaining -= to_read
+      write_file(file_path, all_data[data_offset..<data_offset + file_info.length])
+      data_offset += file_info.length
       
       echo "Wrote file: ", file_path

@@ -31,7 +31,7 @@ proc url_encode(s: string): string =
 
 proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 6881, 
                          uploaded: int = 0, downloaded: int = 0, left: int = 0): TrackerResponse =
-  let client = new_http_client()
+  let client = new_http_client(timeout = 15000)
   defer: client.close()
   
   var params = @[
@@ -50,7 +50,7 @@ proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 688
     if i > 0: announce_url &= "&"
     announce_url &= key & "=" & value
   
-  echo "Announcing to tracker: ", announce_url
+  echo "Contacting tracker..."
   
   let response = client.get_content(announce_url)
   let decoded = parse_bencode(response)
@@ -136,4 +136,4 @@ proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 688
   else:
     raise TrackerError.new_exception("Invalid peers format in tracker response")
   
-  echo "Found ", result.peers.len, " peers"
+  echo "Found ", result.peers.len, " peers (", result.complete, " seeders, ", result.incomplete, " leechers)"

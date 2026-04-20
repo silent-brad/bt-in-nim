@@ -1,4 +1,4 @@
-import std/[strutils, tables, hashes, streams, sha1]
+import std/[tables, sha1]
 import bencode
 
 type
@@ -17,9 +17,11 @@ type
 
   TorrentError* = object of CatchableError
 
-proc sha1_hash(data: string): string =
-  let hash = secure_hash(data)
-  result = $hash
+proc sha1_raw(data: string): string =
+  let digest = Sha1Digest(secure_hash(data))
+  result = new_string(20)
+  for i in 0..<20:
+    result[i] = char(digest[i])
 
 proc parse_torrent*(filename: string): TorrentFile =
   let content = read_file(filename)
@@ -48,7 +50,7 @@ proc parse_torrent*(filename: string): TorrentFile =
   
   # Calculate info hash
   let info_encoded = encode_bencode(root["info"])
-  result.info_hash = sha1_hash(info_encoded)
+  result.info_hash = sha1_raw(info_encoded)
   
   # Parse info dictionary
   if "piece length" notin info:
@@ -106,16 +108,16 @@ proc parse_torrent*(filename: string): TorrentFile =
       if "path" notin file_dict or file_dict["path"].kind != bk_list:
         raise new_exception(TorrentError, "Invalid file path")
       
-      var FileInfo = FileInfo()
-      FileInfo.length = file_dict["length"].int_val
-      result.length += FileInfo.length
+      var file_entry = FileInfo()
+      file_entry.length = file_dict["length"].int_val
+      result.length += file_entry.length
       
       for path_component in file_dict["path"].list_val:
         if path_component.kind != bk_string:
           raise new_exception(TorrentError, "Invalid path component")
-        FileInfo.path.add(path_component.str_val)
+        file_entry.path.add(path_component.str_val)
       
-      result.files.add(FileInfo)
+      result.files.add(file_entry)
 
 proc piece_count*(torrent: TorrentFile): int =
   result = (torrent.length + torrent.piece_length - 1) div torrent.piece_length
