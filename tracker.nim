@@ -2,7 +2,7 @@ import std/[httpclient, strutils, uri, random, tables]
 import bencode, torrent
 
 type
-  Tracker_response* = object
+  TrackerResponse* = object
     interval*: int
     peers*: seq[Peer]
     complete*: int
@@ -13,7 +13,7 @@ type
     port*: int
     id*: string
   
-  Tracker_error* = object of Catchable_error
+  TrackerError* = object of CatchableError
 
 proc generate_peer_id*(): string =
   randomize()
@@ -29,8 +29,8 @@ proc url_encode(s: string): string =
     else:
       result &= "%" & to_hex(ord(c), 2)
 
-proc announce_to_tracker*(torrent: Torrent_file, peer_id: string, port: int = 6881, 
-                         uploaded: int = 0, downloaded: int = 0, left: int = 0): Tracker_response =
+proc announce_to_tracker*(torrent: TorrentFile, peer_id: string, port: int = 6881, 
+                         uploaded: int = 0, downloaded: int = 0, left: int = 0): TrackerResponse =
   let client = new_http_client()
   defer: client.close()
   
@@ -56,14 +56,14 @@ proc announce_to_tracker*(torrent: Torrent_file, peer_id: string, port: int = 68
   let decoded = parse_bencode(response)
   
   if decoded.kind != bk_dict:
-    raise new_exception(Tracker_error, "Invalid tracker response")
+    raise new_exception(TrackerError, "Invalid tracker response")
   
   let tracker_dict = decoded.dict_val
   
   # Check for failure reason
   if "failure reason" in tracker_dict:
     if tracker_dict["failure reason"].kind == bk_string:
-      raise new_exception(Tracker_error, "Tracker error: " & tracker_dict["failure reason"].str_val)
+      raise new_exception(TrackerError, "Tracker error: " & tracker_dict["failure reason"].str_val)
   
   # Parse interval
   if "interval" in tracker_dict and tracker_dict["interval"].kind == bk_int:
@@ -80,7 +80,7 @@ proc announce_to_tracker*(torrent: Torrent_file, peer_id: string, port: int = 68
   
   # Parse peers (compact format)
   if "peers" notin tracker_dict:
-    raise new_exception(Tracker_error, "No peers in tracker response")
+    raise new_exception(TrackerError, "No peers in tracker response")
   
   result.peers = @[]
   
@@ -89,7 +89,7 @@ proc announce_to_tracker*(torrent: Torrent_file, peer_id: string, port: int = 68
     let peers_data = tracker_dict["peers"].str_val
     
     if peers_data.len mod 6 != 0:
-      raise new_exception(Tracker_error, "Invalid peers data length")
+      raise new_exception(TrackerError, "Invalid peers data length")
     
     var i = 0
     while i < peers_data.len:
@@ -134,6 +134,6 @@ proc announce_to_tracker*(torrent: Torrent_file, peer_id: string, port: int = 68
         result.peers.add(peer)
   
   else:
-    raise new_exception(Tracker_error, "Invalid peers format in tracker response")
+    raise TrackerError.new_exception("Invalid peers format in tracker response")
   
   echo "Found ", result.peers.len, " peers"

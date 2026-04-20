@@ -2,15 +2,15 @@ import std/[os, asyncdispatch, asyncnet, net, strutils, times, random]
 import torrent, tracker, peer_wire, piece_manager
 
 type
-  Torrent_client* = ref object
+  TorrentClient* = ref object
     torrent*: Torrent_file
     peer_id*: string
     piece_manager*: Piece_manager
-    peers*: seq[Peer_connection]
+    peers*: seq[PeerConnection]
     max_peers*: int
 
-proc new_torrent_client*(torrent_file: string, max_peers: int = 50): Torrent_client =
-  result = Torrent_client(
+proc new_torrent_client*(torrent_file: string, max_peers: int = 50): TorrentClient =
+  result = TorrentClient(
     torrent: parse_torrent(torrent_file),
     peer_id: generate_peer_id(),
     max_peers: max_peers,
@@ -23,7 +23,7 @@ proc new_torrent_client*(torrent_file: string, max_peers: int = 50): Torrent_cli
   echo "Pieces: ", result.torrent.piece_count()
   echo "Total size: ", result.torrent.length, " bytes"
 
-proc connect_to_peers(client: Torrent_client, tracker_peers: seq[Peer]) =
+proc connect_to_peers(client: TorrentClient, tracker_peers: seq[Peer]) =
   var connected = 0
   
   for peer in tracker_peers:
@@ -37,20 +37,20 @@ proc connect_to_peers(client: Torrent_client, tracker_peers: seq[Peer]) =
       connected += 1
       
       # Send interested message
-      let interested_msg = Peer_message(msg_type: mt_interested)
+      let interested_msg = PeerMessage(msg_type: mt_interested)
       conn.send_message(interested_msg)
       conn.am_interested = true
       
       echo "Successfully connected to peer ", peer.ip, ":", peer.port
       
-    except Peer_error as e:
+    except PeerError as e:
       echo "Failed to connect to peer ", peer.ip, ":", peer.port, ": ", e.msg
     except OSError as e:
       echo "Network error connecting to peer ", peer.ip, ":", peer.port, ": ", e.msg
     
     sleep(100)  # Brief delay between connections
 
-proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
+proc download_from_peer(client: TorrentClient, conn: PeerConnection) =
   try:
     # First, try to receive the bitfield
     var received_bitfield = false
@@ -79,7 +79,7 @@ proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
           echo "Received message type ", msg.msg_type, " from peer ", conn.peer.ip
         
         attempts += 1
-      except Peer_error:
+      except PeerError:
         attempts += 1
         sleep(500)
     
@@ -114,7 +114,7 @@ proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
                 active_requests -= 1
             else:
               discard
-          except Peer_error:
+          except PeerError:
             break
           
           continue
@@ -124,7 +124,7 @@ proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
           let block_req = client.piece_manager.get_next_block(peer_bitfield)
           
           # Send request
-          let request_msg = Peer_message(
+          let request_msg = PeerMessage(
             msg_type: mt_request,
             req_index: block_req.piece_index,
             req_begin: block_req.begin,
@@ -162,7 +162,7 @@ proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
           else:
             echo "Received message type ", msg.msg_type, " from peer ", conn.peer.ip
         
-        except Peer_error:
+        except PeerError:
           # Timeout or connection issue
           break
       
@@ -176,7 +176,7 @@ proc download_from_peer(client: Torrent_client, conn: Peer_connection) =
   finally:
     conn.disconnect()
 
-proc download*(client: Torrent_client) =
+proc download*(client: TorrentClient) =
   echo "Starting download for torrent: ", client.torrent.name
   
   try:

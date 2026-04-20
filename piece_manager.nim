@@ -2,26 +2,26 @@ import std/[tables, sets, sha1, strutils, os, streams]
 import torrent, peer_wire
 
 type
-  Piece_manager* = ref object
+  PieceManager* = ref object
     torrent*: Torrent_file
-    pieces*: seq[Piece_state]
+    pieces*: seq[PieceState]
     completed_pieces*: Hash_set[int]
-    pending_blocks*: Table[int, seq[Block_request]]
+    pending_blocks*: Table[int, seq[BlockRequest]]
     downloaded_data*: Table[int, string]
   
-  Piece_state* = object
+  PieceState* = object
     index*: int
     downloaded*: bool
     verified*: bool
-    blocks*: seq[Block_state]
+    blocks*: seq[BlockState]
   
-  Block_state* = object
+  BlockState* = object
     begin*: int
     length*: int
     downloaded*: bool
     data*: string
   
-  Block_request* = object
+  BlockRequest* = object
     piece_index*: int
     begin*: int
     length*: int
@@ -29,19 +29,19 @@ type
 
 const BLOCK_SIZE = 16384  # 16KB
 
-proc new_piece_manager*(torrent: Torrent_file): Piece_manager =
-  result = Piece_manager(
+proc new_piece_manager*(torrent: Torrent_file): PieceManager =
+  result = PieceManager(
     torrent: torrent,
     pieces: @[],
     completed_pieces: init_hash_set[int](),
-    pending_blocks: init_table[int, seq[Block_request]](),
+    pending_blocks: init_table[int, seq[BlockRequest]](),
     downloaded_data: init_table[int, string]()
   )
   
   # Initialize pieces
   let piece_count = torrent.piece_count()
   for i in 0..<piece_count:
-    var piece = Piece_state(
+    var piece = PieceState(
       index: i,
       downloaded: false,
       verified: false,
@@ -54,7 +54,7 @@ proc new_piece_manager*(torrent: Torrent_file): Piece_manager =
     # Split piece into blocks
     while offset < piece_size:
       let block_size = min(BLOCK_SIZE, piece_size - offset)
-      piece.blocks.add(Block_state(
+      piece.blocks.add(BlockState(
         begin: offset,
         length: block_size,
         downloaded: false,
@@ -68,7 +68,7 @@ proc sha1_hash(data: string): string =
   let hash = secure_hash(data)
   result = $hash
 
-proc get_next_block*(pm: Piece_manager, peer_pieces: seq[bool]): Block_request =
+proc get_next_block*(pm: PieceManager, peer_pieces: seq[bool]): BlockRequest =
   # Find a piece that the peer has and we need
   for piece_idx in 0..<pm.pieces.len:
     if piece_idx >= peer_pieces.len or not peer_pieces[piece_idx]:
@@ -82,7 +82,7 @@ proc get_next_block*(pm: Piece_manager, peer_pieces: seq[bool]): Block_request =
     # Find an undownloaded block in this piece
     for blk in piece.blocks:
       if not blk.downloaded:
-        return Block_request(
+        return BlockRequest(
           piece_index: piece_idx,
           begin: blk.begin,
           length: blk.length,
@@ -92,7 +92,7 @@ proc get_next_block*(pm: Piece_manager, peer_pieces: seq[bool]): Block_request =
   # No blocks found
   raise new_exception(Catchable_error, "No blocks available")
 
-proc add_block*(pm: Piece_manager, piece_index: int, begin: int, data: string): bool =
+proc add_block*(pm: PieceManager, piece_index: int, begin: int, data: string): bool =
   if piece_index < 0 or piece_index >= pm.pieces.len:
     return false
   
@@ -143,41 +143,41 @@ proc add_block*(pm: Piece_manager, piece_index: int, begin: int, data: string): 
   
   return false
 
-proc is_piece_complete*(pm: Piece_manager, piece_index: int): bool =
+proc is_piece_complete*(pm: PieceManager, piece_index: int): bool =
   if piece_index < 0 or piece_index >= pm.pieces.len:
     return false
   
   return piece_index in pm.completed_pieces
 
-proc progress*(pm: Piece_manager): float =
+proc progress*(pm: PieceManager): float =
   if pm.pieces.len == 0:
     return 0.0
   
   return pm.completed_pieces.len.float / pm.pieces.len.float
 
-proc bytes_downloaded*(pm: Piece_manager): int =
+proc bytes_downloaded*(pm: PieceManager): int =
   result = 0
   for piece_index in pm.completed_pieces:
     result += pm.torrent.piece_size(piece_index)
 
-proc is_complete*(pm: Piece_manager): bool =
+proc is_complete*(pm: PieceManager): bool =
   return pm.completed_pieces.len == pm.pieces.len
 
-proc get_piece_data*(pm: Piece_manager, piece_index: int): string =
+proc get_piece_data*(pm: PieceManager, piece_index: int): string =
   if piece_index in pm.downloaded_data:
     return pm.downloaded_data[piece_index]
   return ""
 
-proc needed_pieces*(pm: Piece_manager): seq[int] =
+proc needed_pieces*(pm: PieceManager): seq[int] =
   result = @[]
   for i in 0..<pm.pieces.len:
     if i notin pm.completed_pieces:
       result.add(i)
 
-proc has_piece*(pm: Piece_manager, piece_index: int): bool =
+proc has_piece*(pm: PieceManager, piece_index: int): bool =
   return piece_index in pm.completed_pieces
 
-proc write_files*(pm: Piece_manager, output_dir: string = ".") =
+proc write_files*(pm: PieceManager, output_dir: string = ".") =
   if not pm.is_complete():
     echo "Download not complete, cannot write files"
     return
